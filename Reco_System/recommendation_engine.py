@@ -2,7 +2,7 @@ import numpy as np
 import random
 from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
-from data_loader import load_and_preprocess_data, extract_genres, extract_authors
+from .data_loader import load_and_preprocess_data, extract_genres, extract_authors
 
 # 모델 및 데이터 초기화
 model = SentenceTransformer("sentence-transformers/xlm-r-100langs-bert-base-nli-stsb-mean-tokens")
