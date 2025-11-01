@@ -1,4 +1,5 @@
 import numpy as np
+import random
 from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
 from data_loader import load_and_preprocess_data, extract_genres, extract_authors
@@ -17,7 +18,7 @@ def jac(list1, list2):
 
 
 # 자카드 기반 후보 도서군 생성
-def build_candidates(threshold=0.5):
+def build_candidates(threshold=0.2):
     n = len(genre_list)
     jac_list = np.zeros((n, n))
     for i in range(n):
@@ -70,4 +71,77 @@ def recommend_books(title, top_k=20):
             0.2 * author_sim(title)
     )
     ranked = sorted(zip(candidate_indices, scores), key=lambda x: x[1], reverse=True)[:top_k]
-    return [{"title": data.iloc[i]['title']} for i, _ in ranked]
+    return [{"title": data.iloc[i]['title'],
+             "writer":data.iloc[i]['writer'],
+             "publisher": data.iloc[i]['publisher'],
+             "school": data.iloc[i]['school'],
+             "id_number": data.iloc[i]['id_number'],
+             "call_num": data.iloc[i]['call_num'],
+             "description": data.iloc[i]['description'],
+             "publication_date": data.iloc[i]['publication_date'],
+             "img": data.iloc[i]['img'],
+             "category": data.iloc[i]['catgory'],
+             } for i, _ in ranked]
+
+
+def recommend_page_books(titles, total_k=20):
+    if not titles:
+        return []
+
+    # 빌린 책이 20 초과인 경우 랜덤으로 10권 뽑아서 titles 리스트로 반환
+    max_input = 20
+    if len(titles) > max_input:
+        titles = random.sample(titles, 10)
+
+    # 각 책당 추천할 개수 계산
+    num_books = len(titles)
+    per_book = total_k // num_books
+    remainder = total_k % num_books  # 나머지는 앞에서부터 하나씩 더 줌
+
+    all_recs = []
+    used_indices = set()  # 중복 제거용
+
+    for i, title in enumerate(titles):
+        # idx = data[data['title'] == title].index[0]
+        try:
+            idx = data[data['title'] == title].index[0]
+        except IndexError:
+            continue
+
+        candidate_indices = candidates_dict[idx]
+
+        scores = (
+            0.5 * cosine_sim(title) +
+            0.3 * genre_sim(title) +
+            0.2 * author_sim(title)
+        )
+
+        ranked = sorted(zip(candidate_indices, scores), key=lambda x: x[1], reverse=True)
+
+        # 이 책이 가져갈 추천 개수
+        num_recs = per_book + (1 if i < remainder else 0)
+
+        count = 0
+        for j, _ in ranked:
+            if j not in used_indices:
+                used_indices.add(j)
+                all_recs.append(j)
+                count += 1
+            if count >= num_recs:
+                break
+
+    # 최종 추천 도서 정보 리스트 반환
+    result = [{
+        "title": data.iloc[idx]['title'],
+        "writer": data.iloc[idx]['writer'],
+        "publisher": data.iloc[idx]['publisher'],
+        "school": data.iloc[idx]['school'],
+        "id_number": data.iloc[idx]['id_number'],
+        "call_num": data.iloc[idx]['call_num'],
+        "description": data.iloc[idx]['description'],
+        "publication_date": data.iloc[idx]['publication_date'],
+        "img": data.iloc[idx]['img'],
+        "category": data.iloc[idx]['catgory'],
+    } for idx in all_recs]
+
+    return result
