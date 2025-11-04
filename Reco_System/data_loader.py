@@ -18,11 +18,11 @@ engine = create_engine(
     echo=False
 )
 
-# DB에서 book + book_detail + affiliation JOIN
+# DB에서 book + book_detail + affiliation JOIN (+책 학교 소속)
 def load_and_preprocess_data():
     with engine.connect() as conn:
         query = text("""
-            SELECT 
+            SELECT
                 b.id,
                 b.book_name AS title,
                 b.book_author AS writer,
@@ -33,6 +33,7 @@ def load_and_preprocess_data():
                 b.book_image AS img,
                 bd.registration_number AS id_number,
                 bd.call_number AS call_num,
+                a.id AS school_id,
                 a.affiliation_name AS school
             FROM book b
             LEFT JOIN book_detail bd ON bd.book = b.id
@@ -41,16 +42,9 @@ def load_and_preprocess_data():
         data = pd.read_sql(query, conn)
 
     # 결측값 처리
-    data['title'] = data['title'].fillna('')
-    data['writer'] = data['writer'].fillna('')
-    data['publisher'] = data['publisher'].fillna('')
-    data['publication_date'] = data['publication_date'].fillna('')
-    data['description'] = data['description'].fillna('')
-    data['catgory'] = data['catgory'].fillna('')
-    data['img'] = data['img'].fillna('')
-    data['school'] = data['school'].fillna('')
-    data['id_number'] = data['id_number'].fillna('')
-    data['call_num'] = data['call_num'].fillna('')
+    for col in ["title", "writer", "publisher", "publication_date", "description",
+                "catgory", "img", "school", "id_number", "call_num"]:
+        data[col] = data[col].fillna('')
 
     # 책 소개에서 특수문자 제거
     data['description'] = data['description'].str.replace('[^가-힣a-zA-Z0-9 .,!?]', '', regex=True)
@@ -59,6 +53,34 @@ def load_and_preprocess_data():
     data = data.drop_duplicates(subset=['img']).reset_index(drop=True)
 
     return data
+
+
+def get_user_school_id(user_name: str) -> int | None:
+    with engine.connect() as conn:
+        row = conn.execute(text("""
+            SELECT a.id AS user_school_id
+            FROM member m
+            LEFT JOIN affiliation a ON m.affiliation = a.id
+            WHERE m.user_name = :user_name
+            LIMIT 1
+        """), {"user_name": user_name}).mappings().first()
+    return row["user_school_id"] if row else None
+
+
+# 대여한 책 제목
+def load_rented_book_titles(user_name):
+    with engine.connect() as conn:
+        query = text("""
+            SELECT DISTINCT 
+                b.book_name AS title
+            FROM book_rental_record br
+            JOIN book_detail bd ON br.book_detail = bd.id
+            JOIN book b ON bd.book = b.id
+            JOIN member m ON br.member = m.id
+            WHERE m.user_name = :user_name
+        """)
+        df_titles = pd.read_sql(query, conn, params={"user_name": user_name})
+    return df_titles['title'].tolist()
 
 
 # 카테고리 분리
@@ -75,16 +97,3 @@ def extract_genres(data):
 def extract_authors(data):
     return [author.split() for author in data['writer'].to_list()]
 
-
-# 대여한 책 제목
-def load_rented_book_titles():
-    with engine.connect() as conn:
-        query = text("""
-            SELECT DISTINCT 
-                b.book_name AS title
-            FROM book_rental_record br
-            JOIN book_detail bd ON br.book_detail = bd.id
-            JOIN book b ON bd.book = b.id;
-        """)
-        df_titles = pd.read_sql(query, conn)
-    return df_titles['title'].to_list()

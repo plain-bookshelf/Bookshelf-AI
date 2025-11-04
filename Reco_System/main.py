@@ -1,8 +1,8 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from .data_loader import load_rented_book_titles
-from .recommendation_engine import recommend_books, recommend_page_books
-from .model import BookInfo
+from .recommendation_engine import recommend_page_books
+from .model import BookUserName
 
 app = FastAPI()
 
@@ -14,16 +14,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-@app.post("/recommend_books")
-async def get_recommendations(book: BookInfo):
-    recs = recommend_books(book.title)
-    return {
-        "recommendations": recs
-    }
+@app.post("/book_post")
+async def book_post(u_n: BookUserName):
+    titles = load_rented_book_titles(u_n.user_name)
+    recs = recommend_page_books(titles[:2], u_n.user_name)
+    return recs
+    # recs = load_rented_book_titles(u_n.user_name)
+    # return recs
 
-@app.get("/book_history")
-async def get_history():
-    recs = recommend_page_books(load_rented_book_titles())
-    return {
-        "recommendations_history": recs
-    }
+
+# taskkill /F /IM python.exe
+# uvicorn Reco_System.main:app --reload
+# uvicorn Reco_System.main:app --host 0.0.0.0 --port 8000 --reload

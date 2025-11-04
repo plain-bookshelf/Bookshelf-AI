@@ -1,8 +1,10 @@
 import numpy as np
+import pandas as pd
 import random
 from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
-from .data_loader import load_and_preprocess_data, extract_genres, extract_authors
+from .data_loader import load_and_preprocess_data, extract_genres, extract_authors, get_user_school_id
+
 
 # 모델 및 데이터 초기화
 model = SentenceTransformer("sentence-transformers/xlm-r-100langs-bert-base-nli-stsb-mean-tokens")
@@ -58,33 +60,17 @@ def author_sim(title):
     return np.array([jac(input_authors, author_list[i]) for i in candidates_dict[idx]])
 
 
-def recommend_books(title, top_k=20):
-    idx = data[data['title'] == title].index[0]
-    candidate_indices = candidates_dict[idx]
-
-    if not candidate_indices:
-        return []
-
-    scores = (
-            0.5 * cosine_sim(title) +
-            0.3 * genre_sim(title) +
-            0.2 * author_sim(title)
-    )
-    ranked = sorted(zip(candidate_indices, scores), key=lambda x: x[1], reverse=True)[:top_k]
-    return [{"title": data.iloc[i]['title'],
-             "writer":data.iloc[i]['writer'],
-             "publisher": data.iloc[i]['publisher'],
-             "school": data.iloc[i]['school'],
-             "id_number": data.iloc[i]['id_number'],
-             "call_num": data.iloc[i]['call_num'],
-             "description": data.iloc[i]['description'],
-             "publication_date": data.iloc[i]['publication_date'],
-             "img": data.iloc[i]['img'],
-             "category": data.iloc[i]['catgory'],
-             } for i, _ in ranked]
+def _to_py(obj):
+    if isinstance(obj, np.generic):
+        return obj.item()
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    if isinstance(obj, pd.Timestamp):
+        return obj.isoformat()
+    return obj
 
 
-def recommend_page_books(titles, total_k=20):
+def recommend_page_books(titles, user_name, total_k=20):
     if not titles:
         return []
 
@@ -102,7 +88,6 @@ def recommend_page_books(titles, total_k=20):
     used_indices = set()  # 중복 제거용
 
     for i, title in enumerate(titles):
-        # idx = data[data['title'] == title].index[0]
         try:
             idx = data[data['title'] == title].index[0]
         except IndexError:
@@ -130,18 +115,57 @@ def recommend_page_books(titles, total_k=20):
             if count >= num_recs:
                 break
 
-    # 최종 추천 도서 정보 리스트 반환
-    result = [{
-        "title": data.iloc[idx]['title'],
-        "writer": data.iloc[idx]['writer'],
-        "publisher": data.iloc[idx]['publisher'],
-        "school": data.iloc[idx]['school'],
-        "id_number": data.iloc[idx]['id_number'],
-        "call_num": data.iloc[idx]['call_num'],
-        "description": data.iloc[idx]['description'],
-        "publication_date": data.iloc[idx]['publication_date'],
-        "img": data.iloc[idx]['img'],
-        "category": data.iloc[idx]['catgory'],
-    } for idx in all_recs]
+    result = []
+    for idx in all_recs:
+        row = data.iloc[idx]
+
+        # id
+        try:
+            _id = int(row["id"])
+        except Exception:
+            _id = row["id"]
+
+        # school_id (NaN/None 대비)
+        _school_id = row.get("school_id")
+        try:
+            _school_id = int(_school_id)
+        except Exception:
+            _school_id = None
+
+        # 날짜는 문자열로
+        _book_date = row["publication_date"]
+        try:
+            _book_date = _book_date.isoformat()  # Timestamp면
+        except Exception:
+            _book_date = str(_book_date)  # 그 외는 문자열화
+
+        item = {
+            "id": _id,
+            "title": row["title"],
+            "writer": row["writer"],
+            "publisher": row["publisher"],
+            "description": row["description"],
+            "book_date": _book_date,
+            "img": row["img"],
+            "school_id": _school_id,  # 플래그 계산용
+        }
+        result.append(item)
+
+    if user_name:
+        school_id = get_user_school_id(user_name)
+        if school_id is not None:
+            try:
+                school_id = int(school_id)
+            except Exception:
+                school_id = None
+        if school_id is not None:
+            for item in result:
+                item["is_school"] = (item.get("school_id") == school_id)
+        else:
+            for item in result:
+                item["is_school"] = False
+
+    for item in result:
+        item.pop("school_id", None)
 
     return result
