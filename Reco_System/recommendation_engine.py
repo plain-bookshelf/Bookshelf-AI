@@ -476,7 +476,6 @@ def _candidates_for(idx: int):
 
 
 def _cosine_scores(idx, cand):
-    """코사인: 준비 전이면 0벡터로 대체(라이트모드)"""
     if not _READY or _EMB is None:
         return np.zeros(len(cand), dtype=float)
     v = _EMB[idx]     # (d,)
