@@ -14,7 +14,10 @@ async def book_post(u_n: BookUserName):
     # recs = load_rented_book_titles(u_n.user_name)
     # return recs
 
-
+@router.post("/book_recs")
+async def book_recs(u_n: BookUserName):
+    recs = load_rented_book_titles(u_n.user_name)
+    return recs
 # taskkill /F /IM python.exe
 # uvicorn Reco_System.main:app --reload
 # uvicorn Reco_System.main:app --host 0.0.0.0 --port 8000 --reload

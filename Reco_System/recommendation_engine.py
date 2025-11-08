@@ -386,6 +386,245 @@
 #-------------------
 # 2차 수정
 
+# import os
+# import threading
+# import random
+# import numpy as np
+# import pandas as pd
+# import heapq
+# from collections import defaultdict
+# from sentence_transformers import SentenceTransformer
+#
+# from .data_loader import (
+#     load_and_preprocess_data,
+#     extract_genres,
+#     extract_authors,
+#     get_user_school_id,
+# )
+#
+# # -------- 전역 캐시/상태 --------
+# _model = None
+# _data = None
+# _genre_list = None
+# _author_list = None
+# _EMB = None
+# _GENRE_INV = None     # 장르 토큰 -> 인덱스 집합
+# _READY = False        # 풀모드(코사인) 준비 완료 플래그
+#
+# EMB_PATH = "embeddings.npy"  # 임베딩 캐시 파일 경로
+#
+#
+# def _build_genre_inv():
+#     """장르 역인덱스(빠른 후보 생성)"""
+#     inv = defaultdict(set)
+#     for i, toks in enumerate(_genre_list):
+#         for t in toks:
+#             inv[t].add(i)
+#     return inv
+#
+#
+# def _warmup():
+#     """무거운 초기화: 백그라운드 1회 실행 (모델 로드 + 임베딩 준비 + 역인덱스 보강)"""
+#     global _model, _EMB, _GENRE_INV, _READY
+#     try:
+#         if _model is None:
+#             # 가벼운 다국어 모델 권장 (속도↑, 품질 적절)
+#             #_model = SentenceTransformer("sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
+#             _model = SentenceTransformer("sentence-transformers/xlm-r-100langs-bert-base-nli-stsb-mean-tokens")
+#         # 임베딩: 파일이 있으면 mmap 즉시 오픈, 없으면 계산 후 저장
+#         if os.path.exists(EMB_PATH):
+#             _EMB = np.load(EMB_PATH, mmap_mode="r")
+#         else:
+#             descs = _data["description"].tolist()
+#             _EMB = _model.encode(
+#                 descs,
+#                 normalize_embeddings=True,
+#                 batch_size=128,
+#                 show_progress_bar=False,
+#             )
+#             np.save(EMB_PATH, _EMB)
+#
+#         # 역인덱스(이미 기본 생성되어 있지만 재확인)
+#         if _GENRE_INV is None:
+#             _GENRE_INV = _build_genre_inv()
+#
+#         _READY = True
+#     except Exception:
+#         _READY = False
+#         raise
+#
+#
+# def init_if_needed():
+#     """가벼운 부분은 동기 초기화, 무거운 건 백그라운드 워밍업"""
+#     global _data, _genre_list, _author_list, _GENRE_INV
+#     if _data is None:
+#         _data = load_and_preprocess_data()               # DB -> DataFrame
+#         _genre_list = extract_genres(_data)              # 장르 토큰 리스트
+#         _author_list = extract_authors(_data)            # 작가 토큰 리스트
+#         _GENRE_INV = _build_genre_inv()                  # O(N)
+#     if not _READY:
+#         threading.Thread(target=_warmup, daemon=True).start()
+#
+#
+# def _candidates_for(idx: int):
+#     """장르 역인덱스 합집합으로 후보 생성 (O(∑토큰))"""
+#     cand = set()
+#     for t in _genre_list[idx]:
+#         cand |= _GENRE_INV.get(t, set())
+#     cand.discard(idx)
+#     return list(cand)
+#
+#
+# def _cosine_scores(idx, cand):
+#     if not _READY or _EMB is None:
+#         return np.zeros(len(cand), dtype=float)
+#     v = _EMB[idx]     # (d,)
+#     M = _EMB[cand]    # (k, d)
+#     return M @ v      # normalize=True → dot == cosine
+#
+#
+# def _genre_scores(idx, cand):
+#     s1 = set(_genre_list[idx])
+#     out = []
+#     for j in cand:
+#         s2 = set(_genre_list[j])
+#         u = len(s1 | s2)
+#         out.append((len(s1 & s2) / u) if u else 0.0)
+#     return np.array(out)
+#
+#
+# def _author_scores(idx, cand):
+#     s1 = set(_author_list[idx])
+#     out = []
+#     for j in cand:
+#         s2 = set(_author_list[j])
+#         u = len(s1 | s2)
+#         out.append((len(s1 & s2) / u) if u else 0.0)
+#     return np.array(out)
+#
+#
+# def _to_py(o):
+#     if isinstance(o, np.generic):
+#         return o.item()
+#     if isinstance(o, np.ndarray):
+#         return o.tolist()
+#     if isinstance(o, pd.Timestamp):
+#         return o.isoformat()
+#     return o
+#
+#
+# def recommend_page_books(titles, user_name, total_k=20):
+#     """
+#     - 서버 즉시 응답: init_if_needed()로 라이트모드(장르/작가) 즉시 사용
+#     - 백그라운드 워밍업 완료되면 코사인까지 포함(품질↑)
+#     """
+#     init_if_needed()
+#
+#     if not titles:
+#         return []
+#
+#     max_input = 20
+#     if len(titles) > max_input:
+#         titles = random.sample(titles, 10)
+#
+#     num_books = len(titles)
+#     per_book = max(1, total_k // num_books)
+#     remainder = total_k % num_books
+#
+#     used = set()
+#     picked = []
+#
+#     for i, title in enumerate(titles):
+#         try:
+#             idx = _data[_data["title"] == title].index[0]
+#         except IndexError:
+#             continue
+#
+#         cand = _candidates_for(idx)
+#         if not cand:
+#             continue
+#
+#         cos = _cosine_scores(idx, cand)
+#         gen = _genre_scores(idx, cand)
+#         aut = _author_scores(idx, cand)
+#
+#         m = min(len(cos), len(gen), len(aut))
+#         if m == 0:
+#             continue
+#
+#         scores = 0.5 * cos[:m] + 0.3 * gen[:m] + 0.2 * aut[:m]
+#         take = per_book + (1 if i < remainder else 0)
+#
+#         ranked = heapq.nlargest(take * 2, zip(cand[:m], scores), key=lambda x: x[1])  # 여유
+#         c = 0
+#         for j, _ in ranked:
+#             if j not in used:
+#                 used.add(j)
+#                 picked.append(j)
+#                 c += 1
+#                 if c >= take:
+#                     break
+#
+#     # 결과 생성 (직렬화 안전 캐스팅)
+#     result = []
+#     for ridx in picked:
+#         row = _data.iloc[ridx]
+#
+#         try:
+#             _id = int(row["id"])
+#         except Exception:
+#             _id = row["id"]
+#
+#         _book_date = row["publication_date"]
+#         try:
+#             _book_date = _book_date.isoformat()
+#         except Exception:
+#             _book_date = str(_book_date)
+#
+#         item = {
+#             "id": _id,
+#             "title": row["title"],
+#             "writer": row["writer"],
+#             "publisher": row["publisher"],
+#             "description": row["description"],
+#             "book_date": _book_date,
+#             "img": row["img"],
+#         }
+#         result.append(item)
+#
+#     # is_school 플래그
+#     if user_name:
+#         school_id = get_user_school_id(user_name)
+#         try:
+#             school_id = int(school_id) if school_id is not None else None
+#         except Exception:
+#             school_id = None
+#
+#         if school_id is not None and "school_id" in _data.columns:
+#             sid_series = pd.to_numeric(_data["school_id"], errors="coerce").astype("Int64")
+#             for item in result:
+#                 ridx = _data.index[_data["title"] == item["title"]][0]
+#                 row_sid = sid_series.iloc[ridx]
+#                 item["is_school"] = (int(row_sid) == school_id) if pd.notna(row_sid) else False
+#         else:
+#             for item in result:
+#                 item["is_school"] = False
+#
+#     return result
+
+
+#3차 수정
+
+# Reco_System/recommendation_engine.py
+# ------------------------------------------------------------
+# - description 컬럼만 임베딩
+# - 캐시 파일: 레포 루트의 book_embeddings_rds.npy
+# - 캐시가 있으면 np.load(mmap_mode="r")로 즉시 로드
+# - 없으면 encode → np.save 로 저장 후 사용
+# - (안전) 캐시 행수 != 데이터 행수면 다시 계산해 저장
+# - 기존 구조/함수 시그니처 유지, os만 사용(pathlib X)
+# ------------------------------------------------------------
+
 import os
 import threading
 import random
@@ -407,81 +646,104 @@ _model = None
 _data = None
 _genre_list = None
 _author_list = None
-_EMB = None
-_GENRE_INV = None     # 장르 토큰 -> 인덱스 집합
-_READY = False        # 풀모드(코사인) 준비 완료 플래그
+_EMB = None                # description 임베딩 (numpy array / memmap)
+_GENRE_INV = None          # 장르 토큰 -> 인덱스 집합
+_READY = False             # 풀모드(코사인) 준비 완료 플래그
 
-EMB_PATH = "embeddings.npy"  # 임베딩 캐시 파일 경로
+# 레포 루트 절대경로: .../Bookshelf-AI
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+EMBEDDING_PATH = os.path.join(BASE_DIR, "embeddings.npy")  # 캐시 경로 고정
 
-
+# ---------------- 내부 유틸 ----------------
 def _build_genre_inv():
-    """장르 역인덱스(빠른 후보 생성)"""
     inv = defaultdict(set)
     for i, toks in enumerate(_genre_list):
         for t in toks:
             inv[t].add(i)
     return inv
 
+def _ensure_model():
+    global _model
+    if _model is None:
+        _model = SentenceTransformer("sentence-transformers/xlm-r-100langs-bert-base-nli-stsb-mean-tokens")
 
-def _warmup():
-    """무거운 초기화: 백그라운드 1회 실행 (모델 로드 + 임베딩 준비 + 역인덱스 보강)"""
-    global _model, _EMB, _GENRE_INV, _READY
-    try:
-        if _model is None:
-            # 가벼운 다국어 모델 권장 (속도↑, 품질 적절)
-            #_model = SentenceTransformer("sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
-            _model = SentenceTransformer("sentence-transformers/xlm-r-100langs-bert-base-nli-stsb-mean-tokens")
-        # 임베딩: 파일이 있으면 mmap 즉시 오픈, 없으면 계산 후 저장
-        if os.path.exists(EMB_PATH):
-            _EMB = np.load(EMB_PATH, mmap_mode="r")
-        else:
-            descs = _data["description"].tolist()
+def _ensure_embeddings():
+    """
+    description 임베딩을 캐시에서 불러오거나, 없으면 생성 후 저장.
+    캐시 행수와 데이터 행수가 다르면 다시 계산해 저장.
+    """
+    global _EMB
+    _ensure_model()
+
+    # 캐시가 존재하면 우선 로드
+    if os.path.exists(EMBEDDING_PATH):
+        _EMB = np.load(EMBEDDING_PATH, mmap_mode="r")
+        # 데이터 행수와 맞지 않으면 재계산
+        if _EMB.shape[0] != len(_data):
+            descs = _data["description"].fillna("").astype(str).tolist()
             _EMB = _model.encode(
                 descs,
                 normalize_embeddings=True,
                 batch_size=128,
-                show_progress_bar=False,
-            )
-            np.save(EMB_PATH, _EMB)
+                show_progress_bar=True,
+                convert_to_numpy=True,
+            ).astype("float32")
+            np.save(EMBEDDING_PATH, _EMB)
+    else:
+        # 캐시가 없으면 새로 계산 후 저장
+        descs = _data["description"].fillna("").astype(str).tolist()
+        _EMB = _model.encode(
+            descs,
+            normalize_embeddings=True,
+            batch_size=128,
+            show_progress_bar=True,
+            convert_to_numpy=True,
+        ).astype("float32")
+        np.save(EMBEDDING_PATH, _EMB)
 
-        # 역인덱스(이미 기본 생성되어 있지만 재확인)
+    # 최종적으로 mmap으로 다시 열어도 좋지만, 이미 메모리에 있으면 그대로 써도 됨
+    # _EMB = np.load(EMBEDDING_PATH, mmap_mode="r")
+
+def _warmup():
+    """무거운 초기화: (모델 로드 + 임베딩 준비 + 역인덱스 보강)"""
+    global _GENRE_INV, _READY
+    try:
+        _ensure_embeddings()
         if _GENRE_INV is None:
             _GENRE_INV = _build_genre_inv()
-
         _READY = True
     except Exception:
         _READY = False
         raise
 
-
 def init_if_needed():
     """가벼운 부분은 동기 초기화, 무거운 건 백그라운드 워밍업"""
     global _data, _genre_list, _author_list, _GENRE_INV
     if _data is None:
-        _data = load_and_preprocess_data()               # DB -> DataFrame
-        _genre_list = extract_genres(_data)              # 장르 토큰 리스트
-        _author_list = extract_authors(_data)            # 작가 토큰 리스트
-        _GENRE_INV = _build_genre_inv()                  # O(N)
+        _data = load_and_preprocess_data()          # DB -> DataFrame
+        _data = _data.reset_index(drop=True)        # 0..N-1 보장(라벨/위치 혼동 방지)
+        _genre_list = extract_genres(_data)         # 장르 토큰 리스트
+        _author_list = extract_authors(_data)       # 작가 토큰 리스트
+        _GENRE_INV = _build_genre_inv()             # O(N)
     if not _READY:
-        threading.Thread(target=_warmup, daemon=True).start()
+        # threading.Thread(target=_warmup, daemon=True).start()
+        _warmup()
 
-
+# ---------------- 스코어링 ----------------
 def _candidates_for(idx: int):
-    """장르 역인덱스 합집합으로 후보 생성 (O(∑토큰))"""
+    """장르 역인덱스 합집합으로 후보 생성"""
     cand = set()
     for t in _genre_list[idx]:
         cand |= _GENRE_INV.get(t, set())
     cand.discard(idx)
     return list(cand)
 
-
 def _cosine_scores(idx, cand):
     if not _READY or _EMB is None:
         return np.zeros(len(cand), dtype=float)
-    v = _EMB[idx]     # (d,)
-    M = _EMB[cand]    # (k, d)
-    return M @ v      # normalize=True → dot == cosine
-
+    v = _EMB[idx]       # (d,)
+    M = _EMB[cand]      # (k, d)
+    return M @ v        # normalize=True → dot == cosine
 
 def _genre_scores(idx, cand):
     s1 = set(_genre_list[idx])
@@ -492,7 +754,6 @@ def _genre_scores(idx, cand):
         out.append((len(s1 & s2) / u) if u else 0.0)
     return np.array(out)
 
-
 def _author_scores(idx, cand):
     s1 = set(_author_list[idx])
     out = []
@@ -501,7 +762,6 @@ def _author_scores(idx, cand):
         u = len(s1 | s2)
         out.append((len(s1 & s2) / u) if u else 0.0)
     return np.array(out)
-
 
 def _to_py(o):
     if isinstance(o, np.generic):
@@ -512,11 +772,12 @@ def _to_py(o):
         return o.isoformat()
     return o
 
-
+# ---------------- 외부 API ----------------
 def recommend_page_books(titles, user_name, total_k=20):
     """
-    - 서버 즉시 응답: init_if_needed()로 라이트모드(장르/작가) 즉시 사용
-    - 백그라운드 워밍업 완료되면 코사인까지 포함(품질↑)
+    - init_if_needed()로 라이트모드(장르/작가) 즉시 사용
+    - 백그라운드 워밍업 완료되면 코사인 포함(품질↑)
+    - description 임베딩 캐시는 book_embeddings_rds.npy 하나만 사용
     """
     init_if_needed()
 
@@ -535,10 +796,11 @@ def recommend_page_books(titles, user_name, total_k=20):
     picked = []
 
     for i, title in enumerate(titles):
-        try:
-            idx = _data[_data["title"] == title].index[0]
-        except IndexError:
+        # 위치 인덱스 사용(라벨 혼동 방지)
+        pos = np.where(_data["title"].values == title)[0]
+        if len(pos) == 0:
             continue
+        idx = int(pos[0])
 
         cand = _candidates_for(idx)
         if not cand:
@@ -555,7 +817,7 @@ def recommend_page_books(titles, user_name, total_k=20):
         scores = 0.5 * cos[:m] + 0.3 * gen[:m] + 0.2 * aut[:m]
         take = per_book + (1 if i < remainder else 0)
 
-        ranked = heapq.nlargest(take * 2, zip(cand[:m], scores), key=lambda x: x[1])  # 여유
+        ranked = heapq.nlargest(take * 2, zip(cand[:m], scores), key=lambda x: x[1])
         c = 0
         for j, _ in ranked:
             if j not in used:
@@ -565,7 +827,6 @@ def recommend_page_books(titles, user_name, total_k=20):
                 if c >= take:
                     break
 
-    # 결과 생성 (직렬화 안전 캐스팅)
     result = []
     for ridx in picked:
         row = _data.iloc[ridx]
@@ -575,7 +836,7 @@ def recommend_page_books(titles, user_name, total_k=20):
         except Exception:
             _id = row["id"]
 
-        _book_date = row["publication_date"]
+        _book_date = row.get("publication_date")
         try:
             _book_date = _book_date.isoformat()
         except Exception:
@@ -603,9 +864,13 @@ def recommend_page_books(titles, user_name, total_k=20):
         if school_id is not None and "school_id" in _data.columns:
             sid_series = pd.to_numeric(_data["school_id"], errors="coerce").astype("Int64")
             for item in result:
-                ridx = _data.index[_data["title"] == item["title"]][0]
-                row_sid = sid_series.iloc[ridx]
-                item["is_school"] = (int(row_sid) == school_id) if pd.notna(row_sid) else False
+                pos = np.where(_data["title"].values == item["title"])[0]
+                if len(pos):
+                    ridx = int(pos[0])
+                    row_sid = sid_series.iloc[ridx]
+                    item["is_school"] = (int(row_sid) == school_id) if pd.notna(row_sid) else False
+                else:
+                    item["is_school"] = False
         else:
             for item in result:
                 item["is_school"] = False
