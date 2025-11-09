@@ -793,6 +793,11 @@ def recommend_page_books(titles, user_name, total_k=20):
     remainder = total_k % num_books
 
     used = set()
+    for title in titles:
+        pos = np.where(_data["title"].values == title)[0]
+        if len(pos):
+            used.add(int(pos[0]))
+
     picked = []
 
     for i, title in enumerate(titles):
